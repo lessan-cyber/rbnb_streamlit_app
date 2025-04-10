@@ -5,13 +5,13 @@ from dotenv import load_dotenv
 import os
 import json
 from typing import Dict, Any, List, Optional
-import google.generativeai as genai # Use the newer package namespace if possible
-import traceback # Import traceback for better error logging
+import google.generativeai as genai 
+import traceback 
 from .config.gemini import connection_to_gemini
 from .schemas.chatschemas import ChatRequest, ChatResponse, ExtractedInfo, Message
 from .config.redis import get_redis_connection, load_conversation_state, save_conversation_state, test_redis_connection, close_connection
 from .tools.booking_tools import update_booking_parameters, update_booking_tool_schema , available_tools
-
+from .config.supabase import get_supabase_client, test_supabase_connection
 # --- Environment & CORS Setup ---
 load_dotenv()
 origins = [
@@ -33,7 +33,8 @@ gemini_model = None # Initialize as None
 @app.on_event("startup")
 async def startup_event():
     """Initialize resources on startup."""
-    await test_redis_connection() # Test the Redis connection
+    #await test_redis_connection() # Test the Redis connection
+    test_supabase_connection() # Test the Supabase connection
 
 
 @app.on_event("shutdown")

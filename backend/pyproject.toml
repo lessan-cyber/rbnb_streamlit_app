@@ -9,4 +9,5 @@ dependencies = [
     "google-genai>=1.10.0",
     "google-generativeai>=0.8.4",
     "redis>=5.2.1",
+    "supabase>=2.15.0",
 ]

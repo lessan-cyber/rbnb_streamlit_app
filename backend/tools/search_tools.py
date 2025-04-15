@@ -1,78 +1,202 @@
 from typing import Optional, List, Dict, Any
 from ..config.supabase import get_supabase_client
 import traceback
+import re
+import logging
 
 
 async def search_listings(
+    session_id: str,
+    query: Optional[str] = None,
     destination: Optional[str] = None,
     guests: Optional[int] = None,
-
-    limit: int = 3 
+    country: Optional[str] = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    min_bedrooms: Optional[int] = None,
+    amenities: Optional[str] = None,
+    check_in: Optional[str] = None,   # Add this parameter
+    check_out: Optional[str] = None,  # Add this parameter
+    limit: int = 5
 ) -> List[Dict[str, Any]]:
     """
-    Searches the Supabase 'listings' table based on destination and guest count.
-    Returns a list of matching listings (up to a limit).
+    Enhanced search function with multiple criteria and better matching.
+    
+    Args:
+        session_id: User's session ID (required but not used for search)
+        query: Free-text search query (searches across multiple fields)
+        destination: City or area to search in
+        guests: Minimum number of guests accommodation must support
+        country: Country to search in
+        min_price: Minimum price per night
+        max_price: Maximum price per night
+        min_bedrooms: Minimum number of bedrooms
+        amenities: Comma-separated list of amenities to filter by
+        limit: Maximum number of results to return
+        
+    Returns:
+        List of matching listing dictionaries
     """
-    print(f"[Tool Start] 'search_listings' called with: dest={destination}, guests={guests}, limit={limit}")
+    log_prefix = f"[SESSION {session_id[:6]}] SEARCH:"
+    logging.info(f"{log_prefix} Starting search with params: query={query}, dest={destination}, "
+                 f"guests={guests}, country={country}, price={min_price}-{max_price}")
+    
     results = []
     try:
-        supabase = get_supabase_client() # Get initialized client
-        query = supabase.table("listings").select(
-            "id, title, city, price_per_night, max_guests, description, image_url" # Select specific columns
+        supabase = get_supabase_client()
+        
+        # Select all relevant fields
+        base_query = supabase.table("listings").select(
+            "id, title, city, country, price_per_night, max_guests, description, "
+            "image_url, bedrooms, amenities"
         )
-
-        # Apply filters based on provided arguments
+        
+        # Build our query with filters
+        if query:
+            # If free text query is provided, search multiple columns
+            # Note: This assumes Supabase has text search capabilities
+            clean_query = query.lower().strip()
+            base_query = base_query.or_(f"title.ilike.%{clean_query}%,description.ilike.%{clean_query}%," 
+                                      f"city.ilike.%{clean_query}%,country.ilike.%{clean_query}%")
+        
+        # Apply individual filters if provided
         if destination:
-            # Use ilike for case-insensitive partial matching on city
-            query = query.ilike("city", f"%{destination.strip()}%")
-        if guests:
-            query = query.gte("max_guests", guests) # max_guests >= required guests
-
-        # Apply limit
-        query = query.limit(limit)
-
+            # Make destination matching more flexible - allow partial matches
+            clean_dest = destination.lower().strip()
+            base_query = base_query.or_(f"city.ilike.%{clean_dest}%,country.ilike.%{clean_dest}%")
+        
+        # Other specific filters
+        if country:
+            base_query = base_query.ilike("country", f"%{country.strip()}%")
+        
+        if guests and guests > 0:
+            # Convert float to integer before sending to database
+            base_query = base_query.gte("max_guests", int(guests))
+            
+        if min_price and min_price > 0:
+            base_query = base_query.gte("price_per_night", min_price)
+            
+        if max_price and max_price > 0:
+            base_query = base_query.lte("price_per_night", max_price)
+            
+        if min_bedrooms and min_bedrooms > 0:
+            base_query = base_query.gte("bedrooms", min_bedrooms)
+            
+        if amenities:
+            # This assumes amenities is stored as an array in Supabase
+            # You might need to adjust based on your actual data model
+            for amenity in amenities.split(','):
+                clean_amenity = amenity.strip().lower()
+                if clean_amenity:
+                    # Assuming Postgres array contains amenity
+                    base_query = base_query.contains("amenities", [clean_amenity])
+        
+        # Apply limit and order by relevance/price
+        base_query = base_query.order("price_per_night").limit(limit)
+        
         # Execute query
-        response = await query.execute() 
-
-        print(f"[Tool Info] Supabase Response: {response}")
-        if response.data:
-            results = response.data
-            print(f"[Tool Info] Found {len(results)} listings.")
+        response = base_query.execute()
+        
+        if not response.data:
+            logging.info(f"{log_prefix} No results found, trying fallback search...")
+            
+            # If no results with specific filters, try a broader search
+            fallback_query = supabase.table("listings").select(
+                "id, title, city, country, price_per_night, max_guests, description, "
+                "image_url, bedrooms"
+            )
+            
+            # Just use destination or country as a simple filter if available
+            if destination:
+                fallback_query = fallback_query.ilike("city", f"%{destination.strip()}%")
+            elif country:
+                fallback_query = fallback_query.ilike("country", f"%{country.strip()}%")
+                
+            # Or search a random set if no location specified
+            fallback_query = fallback_query.limit(limit)
+            fallback_response = fallback_query.execute()
+            
+            if fallback_response.data:
+                results = fallback_response.data
+                logging.info(f"{log_prefix} Fallback found {len(results)} results")
+            else:
+                logging.warning(f"{log_prefix} No results even with fallback")
         else:
-             print("[Tool Info] No listings found matching criteria.")
-             # Consider if response has error messages
-
+            results = response.data
+            logging.info(f"{log_prefix} Found {len(results)} primary results")
+        
+        # Post-process results
+        for item in results:
+            # Add a default image URL if none exists
+            if not item.get("image_url"):
+                item["image_url"] = "https://placehold.co/600x400?text=No+Image"
+            
+            # Ensure description is not too long for display
+            if item.get("description") and len(item["description"]) > 200:
+                item["description"] = item["description"][:197] + "..."
+                
     except Exception as e:
-        print(f"ERROR during Supabase query execution: {e}")
+        logging.error(f"{log_prefix} Error during search: {str(e)}")
         traceback.print_exc()
-        # Return empty list on error or re-raise
+        # Return empty list on error
+    
+    return results
 
-    print("[Tool End] 'search_listings' finished.")
-    return results # Return list of listing dictionaries
+# Add this at the bottom of the file
 
-# --- Tool Schema Definition (Dictionary Format) ---
-search_listings_tool_schema = {
+# Define an improved tool schema that guides the model better
+search_tool_schema = {
     "name": "search_listings",
-    "description": "Searches for available accommodation listings based on criteria like destination city and number of guests. Returns a list of matching properties.",
+    "description": """Searches for available accommodations based on the user's requirements. 
+    USE THIS TOOL WHENEVER:
+    1. A user mentions ANY location, city, or country
+    2. A user asks to see available listings or examples
+    3. A user asks about prices, options, or accommodations in an area
+    DO NOT try to make up examples - ALWAYS use this tool to get real listings.""",
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "destination": {
+            "query": {
                 "type": "STRING",
-                "description": "The city or area the user wants to search listings in (e.g., 'London', 'Kyoto')."
+                "description": "Free text search query extracted from user's message (e.g., 'beachfront condo in Miami')"
+            },
+            "destination": {
+                "type": "STRING", 
+                "description": "City or area name (e.g., 'Paris', 'New York', 'Miami Beach')"
             },
             "guests": {
                 "type": "INTEGER",
-                "description": "The minimum number of guests the accommodation should support."
+                "description": "Number of guests"
             },
-            # Add other parameter descriptions here later (dates, price)
-             "limit": {
+            "country": {
+                "type": "STRING",
+                "description": "Country name if specified"
+            },
+            "min_price": {
+                "type": "NUMBER",
+                "description": "Minimum price per night in USD"
+            },
+            "max_price": {
+                "type": "NUMBER",
+                "description": "Maximum price per night in USD"
+            },
+            "min_bedrooms": {
                 "type": "INTEGER",
-                "description": "Optional. Maximum number of listings to return (default is 3)."
-            }
+                "description": "Minimum number of bedrooms required"
+            },
+            "amenities": {
+                "type": "STRING",
+                "description": "Comma-separated amenities (e.g., 'wifi,pool,gym')"
+            },
+            "check_in": {
+    "type": "STRING",
+    "description": "Check-in date in YYYY-MM-DD format"
+},
+"check_out": {
+    "type": "STRING", 
+    "description": "Check-out date in YYYY-MM-DD format"
+},
         },
-        "required": [] # Make destination/guests optional for now to allow broad searches? Or require destination? Let's make destination optional initially.
+        "required": []
     }
 }
-
-

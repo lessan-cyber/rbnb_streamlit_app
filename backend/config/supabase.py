@@ -41,7 +41,7 @@ def test_supabase_connection() -> bool:
             print("Supabase connection error:", response.error)
             return False
         else:
-            print("Supabase connected successfully. Data retrieved:", response.data)
+            print("Supabase connected successfully")
             return True
     except Exception as e:
         print(f"Error testing Supabase connection: {e}")

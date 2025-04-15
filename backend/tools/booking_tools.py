@@ -59,7 +59,7 @@ update_booking_tool_schema = {
     "name": "update_booking_parameters", # MUST match the function name and the key in available_tools
     "description": "Updates or records booking parameters like destination, check-in date, check-out date, or number of guests based on user input. Use this whenever the user provides any of these specific details.",
     "parameters": {
-        "type": "OBJECT", # Note: Use OBJECT (uppercase) for Gemini schema types
+        "type": "OBJECT", 
         "properties": {
             "destination": {
                 "type": "STRING",
@@ -82,6 +82,3 @@ update_booking_tool_schema = {
     }
 }
 
-available_tools = {
-    "update_booking_parameters": update_booking_parameters,
-}

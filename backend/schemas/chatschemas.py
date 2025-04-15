@@ -1,15 +1,23 @@
-# app/schemas/chatschemas.py
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Any
 import datetime
 
+class ListingResult(BaseModel):
+    """Represents structured data for a single listing found by search."""
+    id: Any 
+    title: Optional[str] = None
+    city: Optional[str] = None
+    price_per_night: Optional[float] = None
+    max_guests: Optional[int] = None
+    description: Optional[str] = None 
+    image_url: Optional[str] = None
+    bedrooms: Optional[int] = None 
+    # amenities: Optional[List[str]] = None 
 class Message(BaseModel):
     """Represents a single message in the chat history."""
-    role: str  # 'user' or 'assistant' (or 'system' if you use it)
+    role: str  
     content: str
-    # You could add other metadata if needed, like a timestamp
-    # timestamp: datetime.datetime = Field(default_factory=datetime.datetime.now)
-
+    
 class ExtractedInfo(BaseModel):
     """Stores the extracted booking parameters."""
     destination: Optional[str] = None
@@ -21,11 +29,9 @@ class ChatRequest(BaseModel):
     """Defines the structure of incoming chat requests."""
     session_id: str
     message: str
-    # We load history/info from Redis based on session_id,
-    # so they don't strictly need to be in the request model itself.
-    # However, you *could* include them if your frontend manages state fully.
-
+   
 class ChatResponse(BaseModel):
     """Defines the structure of outgoing chat responses."""
-    response: str  # The natural language message for the user
-    updated_info: Optional[ExtractedInfo] = None # The latest booking info state
+    response: str  
+    updated_info: Optional[ExtractedInfo] = None 
+    search_results: Optional[List[ListingResult]] = None

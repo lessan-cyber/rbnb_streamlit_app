@@ -1,8 +1,10 @@
-# app/tools/booking_tools.py
 from typing import Optional, Dict, Any, List
-# Import needed schemas and redis functions
+from ..config.supabase import get_supabase_client
 from ..schemas.chatschemas import ExtractedInfo, Message
 from ..config.redis import load_conversation_state, save_conversation_state
+import logging
+import uuid
+from datetime import datetime
 
 # The actual Python function that implements the tool's logic
 async def update_booking_parameters(session_id: str,
@@ -81,4 +83,189 @@ update_booking_tool_schema = {
         "required": [] # List any parameters Gemini MUST provide if it calls the function. Often empty if all are optional updates.
     }
 }
+
+
+
+async def create_booking(
+    session_id: str,
+    user_id: str,
+    listing_id: str,
+    check_in: str,
+    check_out: str,
+    num_guests: int,
+    total_price: float
+) -> Dict[str, Any]:
+    """
+    Creates a booking reservation in the database.
+    
+    Args:
+        session_id: Current conversation session ID
+        user_id: ID of user making the booking (from get_or_create_user tool)
+        listing_id: ID of the listing being booked
+        check_in: Check-in date (YYYY-MM-DD format)
+        check_out: Check-out date (YYYY-MM-DD format)
+        num_guests: Number of guests for the booking
+        total_price: Total price of the booking
+        
+    Returns:
+        Dictionary with booking details including confirmation status
+    """
+    booking_id = None
+    status = "error"
+    error_message = None
+    
+    logging.info(f"Creating booking for User:{user_id}, Listing:{listing_id}, "
+                f"Dates:{check_in} to {check_out}, Guests:{num_guests}")
+    
+    try:
+        # Basic validation
+        if not user_id:
+            return {
+                "status": "error",
+                "message": "User ID is required. Please collect user information first.",
+                "booking_id": None
+            }
+        
+        if not listing_id:
+            return {
+                "status": "error",
+                "message": "Listing ID is required.",
+                "booking_id": None
+            }
+            
+        # Format dates for database
+        try:
+            # Validate date format
+            check_in_date = datetime.strptime(check_in, "%Y-%m-%d")
+            check_out_date = datetime.strptime(check_out, "%Y-%m-%d")
+            
+            if check_in_date >= check_out_date:
+                return {
+                    "status": "error",
+                    "message": "Check-out date must be after check-in date.",
+                    "booking_id": None
+                }
+                
+        except ValueError:
+            return {
+                "status": "error",
+                "message": "Invalid date format. Use YYYY-MM-DD.",
+                "booking_id": None
+            }
+            
+        # Create a unique booking ID
+        booking_id = str(uuid.uuid4())
+        
+        # Get Supabase client
+        supabase = get_supabase_client()
+        
+        # Double-check availability before booking
+        availability_check = (
+            supabase.table("bookings")
+            .select("id")
+            .eq("listing_id", listing_id)
+            .gte("check_out", check_in)
+            .lte("check_in", check_out)
+            .execute()
+        )
+        
+        if availability_check.data and len(availability_check.data) > 0:
+            return {
+                "status": "unavailable",
+                "message": "This listing is no longer available for the selected dates.",
+                "booking_id": None
+            }
+            
+        # Create booking record
+        booking_data = {
+            "id": booking_id,
+            "user_id": user_id,
+            "listing_id": listing_id,
+            "check_in": check_in,
+            "check_out": check_out,
+            "num_guests": num_guests,
+            "total_price": total_price,
+            "booking_date": datetime.now().isoformat(),
+            "status": "confirmed"  # Or "pending" if you have a multi-step process
+        }
+        
+        booking_response = supabase.table("bookings").insert(booking_data).execute()
+        
+        if booking_response.data:
+            status = "success"
+            
+            # Get listing details for the response
+            listing_response = (
+                supabase.table("listings")
+                .select("title, city, image_url")
+                .eq("id", listing_id)
+                .execute()
+            )
+            
+            listing_details = listing_response.data[0] if listing_response.data else {}
+            
+            # Return success response with details
+            return {
+                "status": "success",
+                "booking_id": booking_id,
+                "user_id": user_id,
+                "listing_id": listing_id,
+                "listing_title": listing_details.get("title", "Unknown listing"),
+                "listing_city": listing_details.get("city", ""),
+                "check_in": check_in,
+                "check_out": check_out,
+                "num_guests": num_guests,
+                "total_price": total_price,
+                "message": "Booking confirmed successfully!"
+            }
+        else:
+            error_message = "Failed to create booking record"
+            
+    except Exception as e:
+        error_message = str(e)
+        logging.error(f"Error creating booking: {e}")
+        
+    # Return error response if we got here
+    return {
+        "status": "error",
+        "message": error_message or "An error occurred during booking",
+        "booking_id": booking_id
+    }
+
+# Define the tool schema for the AI
+create_booking_tool_schema = {
+    "name": "create_booking",
+    "description": "Creates a booking reservation after user confirms they want to book a specific listing. Should ONLY be used after get_or_create_user has been successfully called and the user has explicitly confirmed they want to book.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "user_id": {
+                "type": "STRING",
+                "description": "The user ID obtained from the get_or_create_user tool call."
+            },
+            "listing_id": {
+                "type": "STRING",
+                "description": "ID of the listing the user wants to book."
+            },
+            "check_in": {
+                "type": "STRING",
+                "description": "Check-in date in YYYY-MM-DD format."
+            },
+            "check_out": {
+                "type": "STRING",
+                "description": "Check-out date in YYYY-MM-DD format."
+            },
+            "num_guests": {
+                "type": "INTEGER",
+                "description": "Number of guests for the booking."
+            },
+            "total_price": {
+                "type": "NUMBER",
+                "description": "Total price for the entire stay."
+            }
+        },
+        "required": ["user_id", "listing_id", "check_in", "check_out", "num_guests", "total_price"]
+    }
+}
+
 

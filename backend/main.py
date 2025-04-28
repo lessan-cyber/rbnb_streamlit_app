@@ -396,11 +396,18 @@ async def chat_endpoint(request: ChatRequest):
     # --- Save Final State ---
     final_history = chat_history + [
         Message(role="user", content=user_message_content),
-        Message(
-            role="assistant", content=ai_natural_response
-        ),  # Save final AI text response
+        Message(role="assistant", content=ai_natural_response),
     ]
-    await save_conversation_state(session_id, updated_info_for_response, final_history)
+
+    current_state = await load_conversation_state(session_id)
+    await save_conversation_state(
+        session_id=session_id,
+        info=updated_info_for_response,
+        history=final_history,
+        user_id=current_state.get("user_id"),  # Preserve user_id
+        listing=current_state.get("listing"),  # Preserve listing
+    )
+
     print("--- Request End ---")
 
     # --- Return Response ---

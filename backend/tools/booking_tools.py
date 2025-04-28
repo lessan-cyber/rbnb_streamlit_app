@@ -6,18 +6,23 @@ import logging
 import uuid
 from datetime import datetime
 
+
 # The actual Python function that implements the tool's logic
-async def update_booking_parameters(session_id: str,
-                                destination: Optional[str] = None,
-                                check_in: Optional[str] = None,
-                                check_out: Optional[str] = None,
-                                guests: Optional[int] = None) -> Dict[str, Any]: # Return a dict for Gemini
+async def update_booking_parameters(
+    session_id: str,
+    destination: Optional[str] = None,
+    check_in: Optional[str] = None,
+    check_out: Optional[str] = None,
+    guests: Optional[int] = None,
+) -> Dict[str, Any]:  # Return a dict for Gemini
     """
     ASYNC function. Updates booking parameters in Redis for the session ID.
     Loads current state, updates with non-null values, saves back,
     and returns the full updated state as a dictionary.
     """
-    print(f"[Tool Start] 'update_booking_parameters' for session {session_id} with args: dest={destination}, in={check_in}, out={check_out}, guests={guests}")
+    print(
+        f"[Tool Start] 'update_booking_parameters' for session {session_id} with args: dest={destination}, in={check_in}, out={check_out}, guests={guests}"
+    )
 
     # --- Load current state ---
     # MUST await the async function
@@ -27,11 +32,13 @@ async def update_booking_parameters(session_id: str,
     history: List[Message] = current_state.get("history", [])
 
     if current_info is None:
-        print(f"[Tool Info] No existing info found for session {session_id}, creating new.")
-        current_info = ExtractedInfo() # Start with a fresh Pydantic model
+        print(
+            f"[Tool Info] No existing info found for session {session_id}, creating new."
+        )
+        current_info = ExtractedInfo()  # Start with a fresh Pydantic model
 
     # --- Update parameters ---
-    updated_values = current_info.model_dump() # Start with existing values
+    updated_values = current_info.model_dump()  # Start with existing values
     if destination is not None:
         updated_values["destination"] = destination
     if check_in is not None:
@@ -51,114 +58,154 @@ async def update_booking_parameters(session_id: str,
 
     print(f"[Tool End] 'update_booking_parameters' finished for session {session_id}")
     # Return the updated info as a dictionary, as expected by Gemini function response part
-    return updated_info_model.model_dump(mode='json')
+    return updated_info_model.model_dump(mode="json")
 
 
 # --- Tool Schema Definition (Dictionary Format) ---
 # This dictionary describes the tool to the Gemini model.
 # It follows the OpenAPI Specification format.
 update_booking_tool_schema = {
-    "name": "update_booking_parameters", # MUST match the function name and the key in available_tools
+    "name": "update_booking_parameters",  # MUST match the function name and the key in available_tools
     "description": "Updates or records booking parameters like destination, check-in date, check-out date, or number of guests based on user input. Use this whenever the user provides any of these specific details.",
     "parameters": {
-        "type": "OBJECT", 
+        "type": "OBJECT",
         "properties": {
             "destination": {
                 "type": "STRING",
-                "description": "The city, region, or specific area the user wants to book accommodation in (e.g., 'Paris', 'Soho, London')."
+                "description": "The city, region, or specific area the user wants to book accommodation in (e.g., 'Paris', 'Soho, London').",
             },
             "check_in": {
                 "type": "STRING",
-                "description": "The user's desired check-in date, ideally formatted as YYYY-MM-DD (e.g., '2025-07-15')."
+                "description": "The user's desired check-in date, ideally formatted as YYYY-MM-DD (e.g., '2025-07-15').",
             },
             "check_out": {
                 "type": "STRING",
-                "description": "The user's desired check-out date, ideally formatted as YYYY-MM-DD (e.g., '2025-07-22')."
+                "description": "The user's desired check-out date, ideally formatted as YYYY-MM-DD (e.g., '2025-07-22').",
             },
             "guests": {
                 "type": "INTEGER",
-                "description": "The total number of guests requiring accommodation (e.g., 2)."
-            }
+                "description": "The total number of guests requiring accommodation (e.g., 2).",
+            },
         },
-        "required": [] # List any parameters Gemini MUST provide if it calls the function. Often empty if all are optional updates.
-    }
+        "required": [],  # List any parameters Gemini MUST provide if it calls the function. Often empty if all are optional updates.
+    },
 }
 
+
+async def get_listing_id_by_name(name: str) -> Optional[str]:
+    """Look up a listing's UUID by its name."""
+    try:
+        supabase = get_supabase_client()
+        response = supabase.table("listings").select("id").eq("title", name).execute()
+
+        if response.data and len(response.data) > 0:
+            return response.data[0]["id"]
+        return None
+    except Exception as e:
+        print(f"Error looking up listing ID: {e}")
+        return None
 
 
 async def create_booking(
     session_id: str,
-    user_id: str,
-    listing_id: str,
-    check_in: str,
-    check_out: str,
-    num_guests: int,
-    total_price: float
+    user_id: Optional[str] = None,
+    listing_id: Optional[str] = None,
+    check_in: Optional[str] = None,
+    check_out: Optional[str] = None,
+    num_guests: Optional[int] = None,
+    total_price: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """
-    Creates a booking reservation in the database.
-    
-    Args:
-        session_id: Current conversation session ID
-        user_id: ID of user making the booking (from get_or_create_user tool)
-        listing_id: ID of the listing being booked
-        check_in: Check-in date (YYYY-MM-DD format)
-        check_out: Check-out date (YYYY-MM-DD format)
-        num_guests: Number of guests for the booking
-        total_price: Total price of the booking
-        
-    Returns:
-        Dictionary with booking details including confirmation status
-    """
+    """Creates a booking reservation in the database."""
+
+    print(
+        f"DEBUG: create_booking called with user_id={user_id}, listing_id={listing_id}"
+    )
+
+    # Load state to get any missing parameters
+    state = await load_conversation_state(session_id)
+    print(
+        f"DEBUG: Loaded state with user_id={state.get('user_id')}, listing={bool(state.get('listing'))}"
+    )
+
+    # Use provided values or fallback to state
+    user_id = user_id or state.get("user_id")
+
+    # Get listing info from state if not provided
+    listing_info = state.get("listing", {})
+    listing_id = listing_id or (listing_info.get("id") if listing_info else None)
+
+    print(f"DEBUG: Final values - user_id={user_id}, listing_id={listing_id}")
+
+    # Get booking parameters from state if not provided
+    info = state.get("info")
+    check_in = (
+        check_in or (info.check_in if info else None) or listing_info.get("check_in")
+    )
+    check_out = (
+        check_out or (info.check_out if info else None) or listing_info.get("check_out")
+    )
+    num_guests = (
+        num_guests or (info.guests if info and hasattr(info, "guests") else None) or 1
+    )
+
+    # Log what we're using
+    logging.info(
+        f"Creating booking with - User:{user_id}, Listing:{listing_id}, "
+        f"Dates:{check_in} to {check_out}, Guests:{num_guests}, Price:{total_price}"
+    )
+
+    # Rest of your existing function continues...
     booking_id = None
     status = "error"
     error_message = None
-    
-    logging.info(f"Creating booking for User:{user_id}, Listing:{listing_id}, "
-                f"Dates:{check_in} to {check_out}, Guests:{num_guests}")
-    
+
+    logging.info(
+        f"Creating booking for User:{user_id}, Listing:{listing_id}, "
+        f"Dates:{check_in} to {check_out}, Guests:{num_guests}"
+    )
+
     try:
         # Basic validation
         if not user_id:
             return {
                 "status": "error",
                 "message": "User ID is required. Please collect user information first.",
-                "booking_id": None
+                "booking_id": None,
             }
-        
+
         if not listing_id:
             return {
                 "status": "error",
                 "message": "Listing ID is required.",
-                "booking_id": None
+                "booking_id": None,
             }
-            
+
         # Format dates for database
         try:
             # Validate date format
             check_in_date = datetime.strptime(check_in, "%Y-%m-%d")
             check_out_date = datetime.strptime(check_out, "%Y-%m-%d")
-            
+
             if check_in_date >= check_out_date:
                 return {
                     "status": "error",
                     "message": "Check-out date must be after check-in date.",
-                    "booking_id": None
+                    "booking_id": None,
                 }
-                
+
         except ValueError:
             return {
                 "status": "error",
                 "message": "Invalid date format. Use YYYY-MM-DD.",
-                "booking_id": None
+                "booking_id": None,
             }
-            
+
         # Create a unique booking ID
         booking_id = str(uuid.uuid4())
-        
+
         # Get Supabase client
         supabase = get_supabase_client()
-        
+
         # Double-check availability before booking
         availability_check = (
             supabase.table("bookings")
@@ -168,14 +215,14 @@ async def create_booking(
             .lte("check_in", check_out)
             .execute()
         )
-        
+
         if availability_check.data and len(availability_check.data) > 0:
             return {
                 "status": "unavailable",
                 "message": "This listing is no longer available for the selected dates.",
-                "booking_id": None
+                "booking_id": None,
             }
-            
+
         # Create booking record
         booking_data = {
             "id": booking_id,
@@ -186,14 +233,14 @@ async def create_booking(
             "num_guests": num_guests,
             "total_price": total_price,
             "booking_date": datetime.now().isoformat(),
-            "status": "confirmed"  # Or "pending" if you have a multi-step process
+            "status": "confirmed",  # Or "pending" if you have a multi-step process
         }
-        
+
         booking_response = supabase.table("bookings").insert(booking_data).execute()
-        
+
         if booking_response.data:
             status = "success"
-            
+
             # Get listing details for the response
             listing_response = (
                 supabase.table("listings")
@@ -201,9 +248,9 @@ async def create_booking(
                 .eq("id", listing_id)
                 .execute()
             )
-            
+
             listing_details = listing_response.data[0] if listing_response.data else {}
-            
+
             # Return success response with details
             return {
                 "status": "success",
@@ -216,21 +263,22 @@ async def create_booking(
                 "check_out": check_out,
                 "num_guests": num_guests,
                 "total_price": total_price,
-                "message": "Booking confirmed successfully!"
+                "message": "Booking confirmed successfully!",
             }
         else:
             error_message = "Failed to create booking record"
-            
+
     except Exception as e:
         error_message = str(e)
         logging.error(f"Error creating booking: {e}")
-        
+
     # Return error response if we got here
     return {
         "status": "error",
         "message": error_message or "An error occurred during booking",
-        "booking_id": booking_id
+        "booking_id": booking_id,
     }
+
 
 # Define the tool schema for the AI
 create_booking_tool_schema = {
@@ -241,31 +289,36 @@ create_booking_tool_schema = {
         "properties": {
             "user_id": {
                 "type": "STRING",
-                "description": "The user ID obtained from the get_or_create_user tool call."
+                "description": "The user ID obtained from the get_or_create_user tool call.",
             },
             "listing_id": {
                 "type": "STRING",
-                "description": "ID of the listing the user wants to book."
+                "description": "ID of the listing the user wants to book.",
             },
             "check_in": {
                 "type": "STRING",
-                "description": "Check-in date in YYYY-MM-DD format."
+                "description": "Check-in date in YYYY-MM-DD format.",
             },
             "check_out": {
                 "type": "STRING",
-                "description": "Check-out date in YYYY-MM-DD format."
+                "description": "Check-out date in YYYY-MM-DD format.",
             },
             "num_guests": {
                 "type": "INTEGER",
-                "description": "Number of guests for the booking."
+                "description": "Number of guests for the booking.",
             },
             "total_price": {
                 "type": "NUMBER",
-                "description": "Total price for the entire stay."
-            }
+                "description": "Total price for the entire stay.",
+            },
         },
-        "required": ["user_id", "listing_id", "check_in", "check_out", "num_guests", "total_price"]
-    }
+        "required": [
+            "user_id",
+            "listing_id",
+            "check_in",
+            "check_out",
+            "num_guests",
+            "total_price",
+        ],
+    },
 }
-
-

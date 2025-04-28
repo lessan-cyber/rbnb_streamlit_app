@@ -3,21 +3,18 @@ from ..config.supabase import get_supabase_client
 from ..schemas.chatschemas import (
     ExtractedInfo,
     Message,
-)  # For potentially getting dates from state
-from ..config.redis import (
-    load_conversation_state,
-    save_conversation_state,
-)  # To get current check-in/out dates
+)
+from ..config.redis import load_conversation_state, save_conversation_state
 import datetime
 import traceback
 
 
 # --- Availability Check Function ---
 async def check_availability(
-    session_id: str,  # Add this parameter
+    session_id: str,
     name: str,
     check_in: Optional[str] = None,
-    check_out: Optional[str] = None,  #
+    check_out: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Checks if a specific listing is available for booking between the given
@@ -117,6 +114,8 @@ async def check_availability(
             # Update state with selected listing
             state = await load_conversation_state(session_id)
             current_info = state.get("info", {})
+            if current_info is None:
+                current_info = {}
             current_info["selected_listing_id"] = listing_id
             current_info["selected_listing_title"] = listing_details.get("title")
             current_info["total_price"] = total_price
@@ -128,18 +127,32 @@ async def check_availability(
             result["listing_title"] = listing_details.get("title")
 
     if is_available:
-        # Update state with selected listing
+        # Log what we're saving to Redis
+        print(f"DEBUG: Saving listing to Redis state: {listing_id}")
+        print(f"DEBUG: Listing details: {listing_details}")
+        print(f"DEBUG: Total price: {total_price}")
+
+        # Create listing data dictionary for state
+        listing_data = {
+            "id": str(listing_id),
+            "title": name,  # or listing_title if you have it
+            "check_in": check_in,
+            "check_out": check_out,
+            "total_price": total_price,
+        }
+
         state = await load_conversation_state(session_id)
-        current_info = state.get("info", {})
 
-        # Make sure these are being set
-        current_info["selected_listing_id"] = listing_id
-        current_info["selected_listing_title"] = listing_details.get("title")
-
-        # Save state
+        # Save state with listing data
         await save_conversation_state(
-            session_id, current_info, state.get("history", [])
+            session_id=session_id,
+            info=state.get("info"),
+            history=state.get("history", []),
+            user_id=state.get("user_id"),
+            listing=listing_data,  # Pass the listing data here
         )
+
+        print(f"DEBUG: Saved listing data to Redis: {listing_data}")
 
     return result
 

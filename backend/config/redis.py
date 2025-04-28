@@ -27,54 +27,68 @@ async def test_redis_connection():
 
 async def close_connection():
     try:
-        client = await get_redis_connection()  # Assume this returns the client
+        client = await get_redis_connection()
         if client:
-            await client.close()  # Close the connection/pool
+            await client.close()
             print("Redis connection closed.")
     except Exception as e:
         print(f"Error closing Redis connection: {e}")
 
 
-# app/config/redis.py
-# ... (imports including ExtractedInfo, Message) ...
-
-
-# Add user_id to save function signature
 async def save_conversation_state(
     session_id: str,
-    info: Optional[ExtractedInfo],
+    info: Optional[Any],
     history: List[Message],
-    user_id: Optional[str] = None,  # <-- ADD user_id parameter
+    user_id: Optional[str] = None,
+    listing: Optional[Dict[str, Any]] = None,
 ):
-    if not session_id:  # Basic check
+    if not session_id:
         print("Error: Attempted to save state with empty session_id.")
         return
 
+    if info is None:
+        info_dict = None
+    elif hasattr(info, "model_dump"):
+        info_dict = info.model_dump(mode="json")
+    elif hasattr(info, "dict"):
+        info_dict = info.dict()
+    else:
+        info_dict = info
+
+    # Handle history items similarly
+    history_list = []
+    for msg in history:
+        if hasattr(msg, "model_dump"):
+            history_list.append(msg.model_dump(mode="json"))
+        elif hasattr(msg, "dict"):
+            history_list.append(msg.dict())
+        else:
+            history_list.append(msg)
     state = {
-        "info": info.model_dump(mode="json") if info else None,
-        "history": [msg.model_dump(mode="json") for msg in history],
-        "user_id": user_id,  # <-- INCLUDE user_id in the state dict
+        "info": info_dict,
+        "history": history_list,
+        "user_id": user_id,
+        "listing": listing,
     }
+    print(f"Saving state for session: {session_id} (UserID: {user_id})")
     state_json = json.dumps(state)
 
     try:
         client = await get_redis_connection()
         await client.setex(f"session:{session_id}", STATE_EXPIRY_SECONDS, state_json)
-        print(
-            f"Saved state for session: {session_id} (UserID: {user_id})"
-        )  # Log user_id
+        print(f"Saved state for session: {session_id} (UserID: {user_id})")
     except Exception as e:
         print(f"Error saving state to Redis for session {session_id}: {e}")
 
 
 async def load_conversation_state(session_id: str) -> Dict[str, Any]:
     """Loads conversation state from Redis, including user_id."""
-    # ... (check session_id) ...
     default_state = {
         "info": None,
         "history": [],
         "user_id": None,
-    }  # <-- ADD user_id default
+        "listing": None,
+    }
     try:
         client = await get_redis_connection()
         state_json_bytes = await client.get(f"session:{session_id}")
@@ -85,22 +99,21 @@ async def load_conversation_state(session_id: str) -> Dict[str, Any]:
 
             info_data = state_data.get("info")
             history_data = state_data.get("history", [])
-            loaded_user_id = state_data.get("user_id")  # <-- LOAD user_id
-
+            loaded_user_id = state_data.get("user_id")
             loaded_info = ExtractedInfo(**info_data) if info_data else None
             loaded_history = [
                 Message(**msg) for msg in history_data if isinstance(msg, dict)
-            ]  # Basic validation
+            ]
 
-            print(f"Loaded UserID: {loaded_user_id}")  # Log loaded user_id
-            # Return all parts of the state
+            print(f"Loaded UserID: {loaded_user_id}")
+
             return {
                 "info": loaded_info,
                 "history": loaded_history,
                 "user_id": loaded_user_id,
+                "listing": state_data.get("listing"),
             }
         else:
-            # ... (handle not found) ...
             return default_state
     except Exception as e:
         print(f"Error loading state from Redis for session {session_id}: {e}")
